@@ -1,9 +1,0 @@
-IO::NestedCapture 1.01:
-
-	* Initial commit of IO::NestedCapture.
-	* This version is capable of capturing output to STDOUT and STDERR and
-	* "capturing" input sent to STDIN using the start() and stop() methods.
-	* I have 100% test coverage as determined by Devel::Cover.
---This line, and those below, will be ignored--
-
-A    .
