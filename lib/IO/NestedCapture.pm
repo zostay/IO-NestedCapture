@@ -18,6 +18,14 @@ our @EXPORT_OK = qw/
 	CAPTURE_IN_ERR
 	CAPTURE_OUT_ERR
 	CAPTURE_ALL
+
+	capture_in
+	capture_out
+	capture_err
+	capture_in_out
+	capture_out_err
+	capture_in_err
+	capture_all
 /;
 
 our %EXPORT_TAGS = (
@@ -31,36 +39,51 @@ our %EXPORT_TAGS = (
 		CAPTURE_OUT_ERR
 		CAPTURE_ALL
 	/ ],
+
+	'subroutines' => [ qw/
+		capture_in
+		capture_out
+		capture_err
+		capture_in_out
+		capture_out_err
+		capture_in_err
+		capture_all
+	/ ],
 );
 
-our $VERSION = '1.01';
+our $VERSION = '1.02';
+
+use constant CAPTURE_NONE    => 0;
+use constant CAPTURE_STDIN   => 1;
+use constant CAPTURE_STDOUT  => 2;
+use constant CAPTURE_IN_OUT  => 3;
+use constant CAPTURE_STDERR  => 4;
+use constant CAPTURE_IN_ERR  => 5;
+use constant CAPTURE_OUT_ERR => 6;
+use constant CAPTURE_ALL     => 7;
 
 =head1 NAME
 
-IO::NestedCapture - module for performing nasted STD* handle captures
+IO::NestedCapture - module for performing nested STD* handle captures
 
 =head1 SYNOPSIS
 
-  use IO::NestedCapture ':constants';
+  use IO::NestedCapture qw/ :subroutines /;
 
-  my $capture = IO::NestedCapture->instance;
-
-  my $in = $capture->in;
+  my $in = IO::NestedCapture->get_next_in;
   print $in "Harry\n";
   print $in "Ron\n";
   print $in "Hermione\n";
 
-  $capture->start(CAPTURE_STDIN | CAPTURE_STDOUT);
+  capture_in_out {
+      my @profs = qw( Dumbledore Flitwick McGonagall );
+      while (<STDIN>) {
+    	  my $prof = shift @prof;
+    	  print STDOUT "$_ favors $prof";
+      }
+  };
 
-  my @profs = qw( Dumbledore Flitwick McGonagall );
-  while (<STDIN>) {
-      my $prof = shift @prof;
-      print STDOUT "$_ favors $prof";
-  }
-
-  $capture->stop(CAPTURE_STDIN | CAPTURE_STDOUT);
-
-  my $out = $capture->out;
+  my $out = IO::NestedCapture->get_last_out;
   while (<$out>) {
 	  print;
   }
@@ -82,7 +105,11 @@ This module implements a much saner approach that involves only a single tie per
 
 With this module you can capture any combination of STDIN, STDOUT, and STDERR. In the case of STDIN, you may feed any input into capture you want (or even set it to use another file handle). For STDOUT and STDERR you may review the full output of these or prior to capture set a file handle that will receive all the data during the capture.
 
-Because the STD* file handles are global to the system, the C<IO::NestedCapture> module acts as a singleton object. You may call any method using the class as the invocant or you may use the C<IO::NestedCapture-E<gt>instance> method to get a reference to the object:
+As of version 1.02 of this library, there are two different interfaces to the library. The object-oriented version was first, but the new subroutine interface is a little less verbose and a little safer.
+
+=head2 OBJECT-ORIENTED INTERFACE
+
+The object-oriented interface is available either through the  C<IO::NestedCapture> class directly or through a single instance of the class available through the C<instance> method.
 
   my $capture = IO::NestedCapture->instance;
   $capture->start(CAPTURE_STDOUT);
@@ -93,7 +120,225 @@ Because the STD* file handles are global to the system, the C<IO::NestedCapture>
 
 It doesn't really make much difference.
 
+You will probably want to important one, several, or all of the capture constants to use this interface.
+
+=head2 SUBROUTINE INTERFACE
+
+This interface is available via the import of one of the capture subroutines (or not if you want to fully qualify the names):
+
+  use IO::NestedCapture 'capture_out';
+  capture_out {
+      # your code to print to STDOUT here...
+  };
+
+  # Is similar to...
+  IO::NestedCapture::capture_err {
+      # your code to print to STDERR here...
+  };
+
+This interface has the advantage of being a little more concise and automatically starts and stops the capture before and after running the code block. This will help avoid typos and other mistakes in your code, such as forgetting to call C<stop> when you are done.
+
+=head2 NESTED CAPTURE SUBROUTINES
+
+These subroutines are used with the subroutine interface. (See L</"SUBROUTINE INTERFACE">.) These subroutines actually use the object-oriented interface internally, so they merely provide a convenient set of shortcuts to it that may help save you some trouble.
+
+For each subroutine, the subroutine captures one or more file handles before running the given code block and uncaptures them after. In case of an exception, the file handles will still be uncaptured properly. Make sure to put a semi-colon after each method call.
+
+To manipulate the input, output, and error handles before or after the capture, you will still need to use parts of the object-oriented interface.
+
+You will want to import the subroutines you want to use when you load the C<IO::NestedCapture> object:
+
+  use IO::NestedCapture qw/ capture_in capture_out /;
+
+or you can import all of the capture subroutines with the C<:subroutines> mnemonic:
+
+  use IO::NestedCapture ':subroutines';
+
+In place of a block, you may also give a code reference as the argument to any of these calls:
+
+  sub foo { print "bah\n" }
+
+  capture_all \&foo;
+
+This will run the subroutine foo (with no arguments) and capture the streams it reads/writes. Also, each of the capture subroutines return the return value of the block or rethrow the exceptions raised in the block after stopping the capture.
+
+=over
+
+=item capture_in { };
+
+This subroutine captures C<STDIN> for the duration of the given block.
+
+=cut
+
+sub capture_in(&) {
+	my $self = IO::NestedCapture->instance;
+	my $code = shift;
+
+	# capture input and then turn off capture, even on error
+	$self->start(CAPTURE_STDIN);
+	my $result = eval {
+		$code->();
+	};
+	my $ERROR = $@;
+	$self->stop(CAPTURE_STDIN);
+
+	# rethrow any errors or return normally
+	die $ERROR if $ERROR;
+	return $result;
+}
+
+=item capture_out { };
+
+This subroutine captures C<STDOUT> for the duration of the given block.
+
+=cut
+
+sub capture_out(&) {
+	my $self = IO::NestedCapture->instance;
+	my $code = shift;
+
+	# capture output and then turn off capture, even on error
+	$self->start(CAPTURE_STDOUT);
+	my $result = eval {
+		$code->();
+	};
+	my $ERROR = $@;
+	$self->stop(CAPTURE_STDOUT);
+
+	# rethrow any errors or return normally
+	die $ERROR if $ERROR;
+	return $result;
+}
+
+=item capture_err { };
+
+This subroutine captures C<STDERR> for the duration of the given block.
+
+=cut
+
+sub capture_err(&) {
+	my $self = IO::NestedCapture->instance;
+	my $code = shift;
+
+	# capture error output and then turn off capture, even on error
+	$self->start(CAPTURE_STDERR);
+	my $result = eval {
+		$code->();
+	};
+	my $ERROR = $@;
+	$self->stop(CAPTURE_STDERR);
+
+	# rethrow any errors or return normally
+	die $ERROR if $ERROR;
+	return $result;
+}
+
+=item capture_in_out { };
+
+This subroutine captures C<STDIN> and C<STDOUT> for the duration of the given block.
+
+=cut
+
+sub capture_in_out(&) {
+	my $self = IO::NestedCapture->instance;
+	my $code = shift;
+
+	# capture input and output and then turn off capture, even on error
+	$self->start(CAPTURE_IN_OUT);
+	my $result = eval {
+		$code->();
+	};
+	my $ERROR = $@;
+	$self->stop(CAPTURE_IN_OUT);
+
+	# rethrow any errors or return normally
+	die $ERROR if $ERROR;
+	return $result;
+}
+
+=item capture_in_err { };
+
+This subroutine captures C<STDIN> and C<STDERR> for the duration of the given block.
+
+=cut
+
+sub capture_in_err(&) {
+	my $self = IO::NestedCapture->instance;
+	my $code = shift;
+
+	# capture input and error output and then turn off capture, even on error
+	$self->start(CAPTURE_IN_ERR);
+	my $result = eval {
+		$code->();
+	};
+	my $ERROR = $@;
+	$self->stop(CAPTURE_IN_ERR);
+
+	# rethrow any errors or return normally
+	die $ERROR if $ERROR;
+	return $result;
+}
+
+=item capture_out_err { };
+
+This subroutine captures C<STDOUT> and C<STDERR> for the duration of the given block.
+
+=cut
+
+sub capture_out_err(&) {
+	my $self = IO::NestedCapture->instance;
+	my $code = shift;
+
+	# capture output and error output and then turn off capture, even on error
+	$self->start(CAPTURE_OUT_ERR);
+	my $result = eval {
+		$code->();
+	};
+	my $ERROR = $@;
+	$self->stop(CAPTURE_OUT_ERR);
+
+	# rethrow any errors or return normally
+	die $ERROR if $ERROR;
+	return $result;
+}
+
+=item capture_all { };
+
+This subroutine captures C<STDIN>, C<STDOUT>, and C<STDERR> for the duration of the given block.
+
+=cut
+
+sub capture_all(&) {
+	my $self = IO::NestedCapture->instance;
+	my $code = shift;
+
+	# capture input, output and error output and then turn off capture, even on
+	# error
+	$self->start(CAPTURE_ALL);
+	my $result = eval {
+		$code->();
+	};
+	my $ERROR = $@;
+	$self->stop(CAPTURE_ALL);
+
+	# rethrow any errors or return normally
+	die $ERROR if $ERROR;
+	return $result;
+}
+
+=back
+
 =head2 NESTED CAPTURE CONSTANTS
+
+These constants are used with the object-oriented interface. (See L</"OBJECT-ORIENTED INTERFACE">.)
+
+You will want to import the constants you want when you load the C<IO::NestedCapture> module:
+
+  use IO::NestedCapture qw/ CAPTURE_STDIN CAPTURE_STDOUT /;
+
+or you may import all of them with the C<:constants> mnemonic.:
+
+  use IO::NestedCapture ':constants';
 
 =over
 
@@ -127,18 +372,9 @@ Used to start or stop capture on STDIN, STDOUT, and STDERR. This is a shortcut f
 
 =back
 
-=cut
+=head2 OBJECT-ORIENTED CAPTURE METHODS
 
-use constant CAPTURE_NONE    => 0;
-use constant CAPTURE_STDIN   => 1;
-use constant CAPTURE_STDOUT  => 2;
-use constant CAPTURE_IN_OUT  => 3;
-use constant CAPTURE_STDERR  => 4;
-use constant CAPTURE_IN_ERR  => 5;
-use constant CAPTURE_OUT_ERR => 6;
-use constant CAPTURE_ALL     => 7;
-
-=head2 NESTED CAPTURE METHODS
+These are the methods used for the object-oriented interface. (See L</"OBJECT-ORIENTED INTERFACE">.)
 
 =over
 
@@ -470,6 +706,14 @@ sub CLOSE {
 	# close
 	close $handle;
 }
+
+=head1 EXPORTS
+
+This module exports all of the constants used with the object-oriented interface and the subroutines used with the subroutine interface. 
+
+See L</"NESTED CAPTURE CONSTANTS"> for the specific constant names or use C<:constants> to import all the constants. 
+
+See L</"NESTED CAPTURE SUBROUTINES"> for the specific subroutine names or use C<:subroutines> to import all the subroutines.
 
 =head1 SEE ALSO
 
